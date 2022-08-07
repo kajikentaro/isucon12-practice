@@ -401,6 +401,11 @@ type PlayerScoreRow struct {
 	UpdatedAt     int64  `db:"updated_at"`
 }
 
+type PlayerScoreJOINCompetitionRow struct {
+	Title    string `db:"title"`
+	MaxScore int64  `db:"max_score"`
+}
+
 // 排他ロックのためのファイル名を生成する
 func lockFilePath(id int64) string {
 	tenantDBDir := getEnv("ISUCON_TENANT_DB_DIR", "../tenant_db")
@@ -1184,46 +1189,22 @@ func playerHandler(c echo.Context) error {
 		}
 		return fmt.Errorf("error retrievePlayer: %w", err)
 	}
-	cs := []CompetitionRow{}
+
+	var pss []PlayerScoreJOINCompetitionRow
 	if err := tenantDB.SelectContext(
 		ctx,
-		&cs,
-		"SELECT * FROM competition WHERE tenant_id = ? ORDER BY created_at ASC",
-		v.tenantID,
-	); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("error Select competition: %w", err)
-	}
-
-	pss := make([]PlayerScoreRow, 0, len(cs))
-	for _, c := range cs {
-		ps := PlayerScoreRow{}
-		if err := tenantDB.GetContext(
-			ctx,
-			&ps,
-			// 最後にCSVに登場したスコアを採用する = row_numが一番大きいもの
-			"SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? AND player_id = ? ORDER BY row_num DESC LIMIT 1",
-			v.tenantID,
-			c.ID,
-			p.ID,
-		); err != nil {
-			// 行がない = スコアが記録されてない
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-			return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, playerID=%s, %w", v.tenantID, c.ID, p.ID, err)
-		}
-		pss = append(pss, ps)
+		&pss,
+		"SELECT C.title, MAX(P.score) AS max_score FROM COMPETITION AS C JOIN PLAYER_SCORE AS P WHERE C.id = P.competition_id AND p.player_id = ? GROUP BY P.competition_id ORDER BY C.created_at",
+		playerID,
+	); err != nil {
+		return fmt.Errorf("error Select player_score: tenantID=%d, playerID=%s, %w", v.tenantID, playerID, err)
 	}
 
 	psds := make([]PlayerScoreDetail, 0, len(pss))
 	for _, ps := range pss {
-		comp, err := retrieveCompetition(ctx, tenantDB, ps.CompetitionID)
-		if err != nil {
-			return fmt.Errorf("error retrieveCompetition: %w", err)
-		}
 		psds = append(psds, PlayerScoreDetail{
-			CompetitionTitle: comp.Title,
-			Score:            ps.Score,
+			CompetitionTitle: ps.Title,
+			Score:            ps.MaxScore,
 		})
 	}
 
